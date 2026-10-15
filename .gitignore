@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Секреты: закрытые ключи публиковать нельзя
+*.pem
+*.key
+
+# Сгенерированные результаты тестов
+test_marked*.png
+marked*.png
+*.tif
+*.tiff
+*.bmp
