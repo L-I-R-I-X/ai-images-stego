@@ -14,3 +14,8 @@ marked*.png
 *.tif
 *.tiff
 *.bmp
+
+# Сгенерированные демо-артефакты (artifact_demo.py)
+*_lsb_*.png
+*_dct_*.png
+*_dwt_*.png
