@@ -123,6 +123,55 @@ def load_public_key(path):
 
 
 # --------------------------------------------------------------------------
+# Извлечение и верификация (одна попытка на заданной ориентации)
+# --------------------------------------------------------------------------
+STATUS_RS = "rs"          # Reed-Solomon не восстановил пакет
+STATUS_MAGIC = "magic"    # пакет декодирован, но маркер не совпал
+STATUS_SIG = "sig"        # маркер на месте, подпись недействительна
+STATUS_OK = "ok"          # подпись подтверждена
+_STATUS_RANK = {STATUS_RS: 0, STATUS_MAGIC: 1, STATUS_SIG: 2, STATUS_OK: 3}
+
+# Ориентации для перебора: (градусы, флаг cv2.rotate или None для исходной)
+ROTATIONS = (
+    (0, None),
+    (90, cv2.ROTATE_90_CLOCKWISE),
+    (180, cv2.ROTATE_180),
+    (270, cv2.ROTATE_90_COUNTERCLOCKWISE),
+)
+
+
+def attempt_withdraw(img, delta, public_key):
+    """Одна попытка извлечь и проверить метку из изображения.
+
+    Возвращает (status, id_value | None). Исключение ValueError (например,
+    изображение слишком мало) пробрасывается наружу — поворот его не исправит.
+    """
+    bits = extract_bits(img, delta)          # может бросить ValueError
+    code = np.packbits(bits).tobytes()
+
+    try:
+        payload = rs_decode(code)
+    except reedsolo.ReedSolomonError:
+        return STATUS_RS, None
+
+    if len(payload) != PAYLOAD_LEN:
+        return STATUS_RS, None
+
+    core = payload[:CORE_LEN]
+    signature = payload[CORE_LEN:CORE_LEN + SIG_LEN]
+
+    if core[:2] != MAGIC:
+        return STATUS_MAGIC, None
+
+    try:
+        public_key.verify(signature, core)
+    except InvalidSignature:
+        return STATUS_SIG, None
+
+    return STATUS_OK, struct.unpack(">I", core[2:6])[0]
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 def parse_args(argv=None):
@@ -132,6 +181,10 @@ def parse_args(argv=None):
     p.add_argument("-i", "--input", required=True, help="анализируемое изображение")
     p.add_argument("-k", "--key", required=True, help="открытый ключ Ed25519 (PEM)")
     p.add_argument("--delta", type=float, default=DEFAULT_DELTA, help="шаг квантования QIM (должен совпадать с embedder)")
+    p.add_argument("--no-rotate", action="store_true",
+                   help="не перебирать повороты 90/180/270, если метка не найдена")
+    p.add_argument("--verbose", action="store_true",
+                   help="показывать результат каждой попытки (по ориентациям)")
     return p.parse_args(argv)
 
 
@@ -154,43 +207,37 @@ def main(argv=None):
         print("[FAIL] %s" % exc)
         return 2
 
-    try:
-        bits = extract_bits(img, args.delta)
-    except Exception as exc:
-        print("[FAIL] %s" % exc)
-        return 2
+    orientations = ROTATIONS if not args.no_rotate else ROTATIONS[:1]
 
-    code = np.packbits(bits).tobytes()
+    best_status = STATUS_RS
+    for angle, flag in orientations:
+        work = img if flag is None else cv2.rotate(img, flag)
+        try:
+            status, id_value = attempt_withdraw(work, args.delta, public_key)
+        except ValueError as exc:
+            print("[FAIL] %s" % exc)
+            return 2
 
-    try:
-        payload = rs_decode(code)
-    except reedsolo.ReedSolomonError:
-        print("[FAIL] Метка разрушена или отсутствует")
-        return 1
-    except Exception as exc:
-        print("[FAIL] Ошибка декодирования: %s" % exc)
-        return 1
+        if args.verbose:
+            label = "исходная" if angle == 0 else "поворот %d°" % angle
+            print("[i] %-12s -> %s" % (label, status))
 
-    if len(payload) != PAYLOAD_LEN:
-        print("[FAIL] Метка разрушена или отсутствует")
-        return 1
+        if status == STATUS_OK:
+            if angle == 0:
+                print("[SUCCESS] Изображение подтверждено. ID: %d" % id_value)
+            else:
+                print("[SUCCESS] Изображение подтверждено. ID: %d "
+                      "(метка найдена при повороте %d°)" % (id_value, angle))
+            return 0
 
-    core = payload[:CORE_LEN]
-    signature = payload[CORE_LEN:CORE_LEN + SIG_LEN]
+        if _STATUS_RANK[status] > _STATUS_RANK[best_status]:
+            best_status = status
 
-    if core[:2] != MAGIC:
-        print("[FAIL] Метка разрушена или отсутствует")
-        return 1
-
-    try:
-        public_key.verify(signature, core)
-    except InvalidSignature:
+    if best_status == STATUS_SIG:
         print("[FAIL] Подпись недействительна")
-        return 1
-
-    id_value = struct.unpack(">I", core[2:6])[0]
-    print("[SUCCESS] Изображение подтверждено. ID: %d" % id_value)
-    return 0
+    else:
+        print("[FAIL] Метка разрушена или отсутствует")
+    return 1
 
 
 if __name__ == "__main__":
