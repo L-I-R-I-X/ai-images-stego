@@ -4,3 +4,4 @@ opencv-python-headless
 PyWavelets
 cryptography
 reedsolo
+matplotlib  # опционально: графики в benchmark.py

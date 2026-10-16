@@ -140,6 +140,36 @@ ROTATIONS = (
 )
 
 
+def verify_bits(bits, public_key):
+    """Проверка сырого битового потока (800 бит).
+
+    Возвращает (status, id_value | None, payload | None).
+    Используется и CLI-детектором, и бенчмарком (для расчёта BER).
+    """
+    code = np.packbits(np.asarray(bits, dtype=np.uint8)).tobytes()
+
+    try:
+        payload = rs_decode(code)
+    except reedsolo.ReedSolomonError:
+        return STATUS_RS, None, None
+
+    if len(payload) != PAYLOAD_LEN:
+        return STATUS_RS, None, None
+
+    core = payload[:CORE_LEN]
+    signature = payload[CORE_LEN:CORE_LEN + SIG_LEN]
+
+    if core[:2] != MAGIC:
+        return STATUS_MAGIC, None, payload
+
+    try:
+        public_key.verify(signature, core)
+    except InvalidSignature:
+        return STATUS_SIG, None, payload
+
+    return STATUS_OK, struct.unpack(">I", core[2:6])[0], payload
+
+
 def attempt_withdraw(img, delta, public_key):
     """Одна попытка извлечь и проверить метку из изображения.
 
@@ -147,28 +177,8 @@ def attempt_withdraw(img, delta, public_key):
     изображение слишком мало) пробрасывается наружу — поворот его не исправит.
     """
     bits = extract_bits(img, delta)          # может бросить ValueError
-    code = np.packbits(bits).tobytes()
-
-    try:
-        payload = rs_decode(code)
-    except reedsolo.ReedSolomonError:
-        return STATUS_RS, None
-
-    if len(payload) != PAYLOAD_LEN:
-        return STATUS_RS, None
-
-    core = payload[:CORE_LEN]
-    signature = payload[CORE_LEN:CORE_LEN + SIG_LEN]
-
-    if core[:2] != MAGIC:
-        return STATUS_MAGIC, None
-
-    try:
-        public_key.verify(signature, core)
-    except InvalidSignature:
-        return STATUS_SIG, None
-
-    return STATUS_OK, struct.unpack(">I", core[2:6])[0]
+    status, id_value, _ = verify_bits(bits, public_key)
+    return status, id_value
 
 
 # --------------------------------------------------------------------------
